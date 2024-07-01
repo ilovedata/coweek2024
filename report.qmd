@@ -1,0 +1,332 @@
+---
+title: "불완전 자료와 합성데이터"
+format: 
+  html: 
+    embed-resources: true
+    number-sections: true
+    number-depth: 3
+    toc: true
+    toc-depth: 2
+---
+
+이 노트북은 20204년 CO-Week Academy 강의에서 사용된 `R` 코드를 담고 있습니다.
+
+
+## 필요한 패키지 불러오기
+
+```{r}
+#| warning: FALSE
+#| message: FALSE
+library(tidyverse)
+library(xtable)
+library(knitr)
+library(DescTools)
+library(mice)
+library(ggmice)
+library(naniar)
+
+#library(flextable)
+#library(broom)
+#library(sjtable2df)
+
+# 그림에서 한글이 깨지지 않도록 하기 위한 설정
+library(showtext)
+# Nanum Pen Script 는 선택
+font_add_google("Nanum Pen Script", "gl")
+showtext_auto()
+
+```
+
+
+## 데이터 불러오기
+
+```{r}
+load("missing_data.RData") # 자료는 R data 형식으로 저장되어 있다.
+ls()
+```
+
+### 원자료의 개요 
+
+- `df_ko` : 원본데이터
+- 서울 열린 데이터 광장에서 2019년 서울특별시 부동산 실거래가 정보를 가진 자료
+- 2019년 거래하여 신고한 주택들의 위치와 정보 그리고 실거래 가격이 포함된 총 67238건의 거래자료
+- 변수 설명 
+  + 실거래가아이디
+  + 건축년도 (주택이 지어진 년도)
+  + 자치구명
+  + 건물면적 (제곱미터)
+  + 층정보  
+  + **물건금액 (거래 가격, 백만원)** 
+  + more...
+
+```{r}
+head(df_ko, 5)
+```
+
+### 예제 자료의 구성 : 결측값이 없는 자료
+
+- `ko_full` : 예제로 사용되는 결측값이 없는 자료: 
+- 예제 자료에서는 이미 지어진 아파트의 거래만 선택(분양 아파트 제외)
+- 아파트의 거래에서 1000건의 자료만 임의로 선택
+- 거래가격의 단위는 백만원으로 변경
+- 최종적으로 예측하고 싶은 관심 변수는 **물건금액 (아파트 거래 가격)** 
+
+```{r}
+head(df_full, 5) %>% kable()
+```
+
+
+### 예제 자료의 구성 : 결측값이 없는 자료
+
+
+- 결측값(*missing data*)의 구조(missing pattern)가 다른  3개의 자료로 구성 
+- `df_miss_1`, `df_miss_2`, `df_miss_3`
+
+
+```{r}
+head(df_miss_1, 5) %>% kable()
+```
+
+### 사용 프로그램
+
+- `R` 프로그램을 사용하여 결측값의 분포와 패턴을 시각화
+- `DescTools` 패키지의 `PlotMiss` 함수를 사용하여 결측값의 위치와 비율을 시각화
+- `ggmice` 패키지의 `plot_pattern` 함수를 사용하여 결측값의 패턴을 시각화
+- `mice` 패키지의 `mice` 함수를 사용하여 결측값을 대체한 자료를 생성
+
+## 결측값의 위치와 비율
+
+### 결측이 있는 예제 자료 1
+
+- 4개의 변수에 결측값이 존재하는 자료 
+- 결측의 발생 원인은 4개의 변수에서 무작위로 발생한 것으로 가정
+  + MCAR (Missing Completely at Random) 가정
+
+
+```{r}  
+PlotMiss(df_miss_1, main="결측값의 위치와 비율")
+```
+
+```{r}
+plot_pattern(df_miss_1, square= FALSE) + 
+  theme(axis.text=element_text(size=10), axis.title=element_text(size=10))
+```
+
+### 결측이 있는 예제 자료 2
+
+- 3개의 변수에 결측값이 존재하는 자료 
+- 결측의 발생 패턴이 **계층적인 패턴**을 가지고 있음
+  + `건물면적` 변수의 결측값의 가능성은 건축연도가 최근일수록 높다. 
+  + `층정보` 변수의 결측값은 `건물면적` 이 결측이면 무조건 결측 
+  + `물건금액` 변수의 결측값은 `층정보` 가 결측이면 무조건 결측 
+  + MAR (Missing at Random) 가정
+
+
+```{r}  
+PlotMiss(df_miss_2, main="결측값의 위치와 비율")
+```
+
+```{r}
+plot_pattern(df_miss_2, square= FALSE) + 
+  theme(axis.text=element_text(size=10), axis.title=element_text(size=10))
+```
+
+### 결측이 있는 예제 자료 3
+
+- 1개의 변수 `물건금액` 에 결측값이 존재하는 자료 
+- `물건금액` 의 값이 크면 결측의 발생 확률이 높은 경우
+  + MNAR (Missing Not at Random) 가정
+
+
+```{r}  
+PlotMiss(df_miss_3, main="결측값의 위치와 비율")
+```
+
+```{r}
+plot_pattern(df_miss_3, square= FALSE) + 
+  theme(axis.text=element_text(size=10), axis.title=element_text(size=10))
+```
+
+
+## 통계분석에서 결측값의 영향 
+
+### 기초통계량 
+
+```{r}
+# 실거래가아이디와	자치구명을 제외하고 4개의 자료로 구성된 리스트 생성
+data_list <- list(df1 = df_full[,-c(1,2)], df2 = df_miss_1[,-c(1,2)], df3 = df_miss_2[,-c(1,2)], df4 = df_miss_3[,-c(1,2)])
+
+# 기초통계량을 계산하는 함수 정의
+calculate_statistics <- function(data) {
+  data %>%
+    summarise_all(list(
+      mean = ~mean(., na.rm = TRUE),
+      sd = ~sd(., na.rm = TRUE),
+      min = ~min(., na.rm = TRUE),
+      max = ~max(., na.rm = TRUE),
+      median = ~median(., na.rm = TRUE),
+      n_missing = ~sum(is.na(.))
+    ))
+}
+
+# lapply 를 시용하여 각각의 data frame 에 대한 기초통계량 계산
+stats_list <- lapply(data_list, calculate_statistics)
+
+# 컬럼 이름의 변경
+names(stats_list) <- names(data_list)
+
+# 기초 통계량을 가진 4개의 데이터 프레임을 하나로 합침
+stats_df <- bind_rows(stats_list, .id = "dataset")
+
+# 비교를 위하여 데이터프레임을 변형 
+stats_long <- stats_df %>%
+  pivot_longer(-dataset, names_to = c("variable", "stat"), names_sep = "_") %>%
+  pivot_wider(names_from = "dataset", values_from = "value")
+
+stats_long_e <- stats_long %>% dplyr::filter(stat %in% c("mean", "median")) %>% dplyr::relocate(stat)
+
+# 컬럼 이름 변경
+colnames(stats_long_e) <- c("통계량","변수",  "Full Data", "MCAR","MAR","MNAR")
+
+# 결과 출력
+stats_long_e %>% kable()
+```
+
+
+### 회귀모형 
+
+- 3개의 설명변수
+
+  1. 건축년도	($x_1$)
+  2. 건물면적	($x_2$)
+  3. 층정보	($x_3$)
+  
+- 위의 3개의 설명변수를 이용하여 물건금액($y$)을 예측하는  회귀모형을 고려  
+
+$$ y = \beta_0 + \beta_1 x_1 + \beta_2 x_2 + \beta_3 x_3 + \epsilon $$
+
+
+- 결측이 없는 자료에 대한 회귀모형 적합
+```{r}
+fm_full <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_full)
+model_summary <- tidy(fm_full)
+model_summary %>% kable()
+```
+
+
+- 예제 결측자료 1에 대한 회귀모형  
+
+```{r}
+fm_miss_1 <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_1)
+model_summary <- tidy(fm_miss_1)
+model_summary %>% kable()
+```
+
+- 예제 결측자료 2에 대한 회귀모형  
+
+```{r}
+fm_miss_2 <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_2)
+model_summary <- tidy(fm_miss_2)
+model_summary %>% kable()
+```
+
+- 예제 결측자료 3에 대한 회귀모형  
+
+```{r}
+fm_miss_3 <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_3)
+model_summary <- tidy(fm_miss_3)
+model_summary %>% kable()
+```
+
+- 결과 비교
+
+```{r}
+# sjPlot 패키지의 tab_model 함수를 이용하여 4개의 회귀 결과를 합쳐서 출력
+comp_models_2 <- sjPlot::tab_model(fm_full,fm_miss_1,fm_miss_2,fm_miss_3)
+comp_models_2
+```
+
+```{r}
+# 결과를 데이터 프레임으로 변환하여 출력
+mtab_df <- sjtable2df::mtab2df(
+  mtab = comp_models_2,
+  n_models = 4,
+  output = "data.frame"
+)
+
+comp_models_3 <- mtab_df[,c(1,2,5,8,11)]
+colnames(comp_models_3) <- c("variable","Full Data", "MCAR","MAR","MNAR")
+
+comp_models_3 %>% kable()
+```
+
+## 결측값 대체
+
+### 평균대체법
+
+- 결측값을 해당 변수의 평균값으로 대체하는 방법
+- mice 패키지의 mice 함수를 이용하여 결측값을 대체
+- 결측값을 대체한 후 회귀모형 적합하여 비교
+
+```{r}
+df_miss_1_mice <- mice(df_miss_1, method = "mean", m = 1, maxit = 1, printFlag = FALSE)
+df_miss_1_imp <- complete(df_miss_1_mice)
+fm_miss_1_imp <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_1_imp)
+
+df_miss_2_mice <- mice(df_miss_2, method = "mean", m = 1, maxit = 1, printFlag = FALSE)
+df_miss_2_imp <- complete(df_miss_2_mice)
+fm_miss_2_imp <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_2_imp)
+
+df_miss_3_mice <- mice(df_miss_3, method = "mean", m = 1, maxit = 1, printFlag = FALSE)
+df_miss_3_imp <- complete(df_miss_3_mice)
+fm_miss_3_imp <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_3_imp)
+
+
+comp_models_imp <- sjPlot::tab_model(fm_full,fm_miss_1_imp,fm_miss_2_imp,fm_miss_3_imp)
+
+mtab_df_imp <- sjtable2df::mtab2df(
+  mtab = comp_models_imp,
+  n_models = 4,
+  output = "data.frame"
+)
+
+comp_models_imp <- mtab_df_imp[,c(1,2,5,8,11)]
+colnames(comp_models_imp ) <- c("variable","Full Data", "MCAR","MAR","MNAR")
+
+comp_models_imp %>% kable()
+```
+
+###  회귀 대체법
+
+- **회귀 대체법**을 사용
+  + 다른 변수들을 사용하여 결측값을 예측하는 모델로 예측값을  생성하여 대체
+  + `R` 패키지 `mice` 를 사용하여 회귀 대체법을 적용
+  
+- 결측값 대체 후 회귀모형 결과를 비교
+  
+```{r}
+df_miss_1_mice <- mice(df_miss_1, method = "norm.predict", m = 1, maxit = 1, printFlag = FALSE)
+df_miss_1_imp <- complete(df_miss_1_mice)
+fm_miss_1_imp <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_1_imp)
+
+df_miss_2_mice <- mice(df_miss_2, method = "norm.predict", m = 1, maxit = 1, printFlag = FALSE)
+df_miss_2_imp <- complete(df_miss_2_mice)
+fm_miss_2_imp <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_2_imp)
+
+df_miss_3_mice <- mice(df_miss_3, method = "norm.predict", m = 1, maxit = 1, printFlag = FALSE)
+df_miss_3_imp <- complete(df_miss_3_mice)
+fm_miss_3_imp <- lm(물건금액 ~ 건축년도 + 건물면적 + 층정보, data = df_miss_3_imp)
+
+comp_models_imp <- sjPlot::tab_model(fm_full,fm_miss_1_imp,fm_miss_2_imp,fm_miss_3_imp)
+
+mtab_df_imp <- sjtable2df::mtab2df(
+  mtab = comp_models_imp,
+  n_models = 4,
+  output = "data.frame"
+)
+
+comp_models_imp <- mtab_df_imp[,c(1,2,5,8,11)]
+colnames(comp_models_imp ) <- c("variable","Full Data", "MCAR","MAR","MNAR")
+
+comp_models_imp %>% kable()
+```
